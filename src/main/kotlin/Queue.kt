@@ -1,0 +1,4 @@
+package asynqueueproblem
+
+class Queue {
+}
