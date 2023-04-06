@@ -5,22 +5,37 @@ import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 
 /**
- * Queue implementation based on linkedList.
+ * A concurrent queue implementation using a linked list to store items.
+ *
+ * The core idea is that each item in the queue represents a [job][QueueJob], which needs to be processed.
+ * Each job can only be processed by a free "worker", if there is one available, otherwise it suspends until a worker
+ * becomes free. By extension, the number of workers represent the queue's parallelism potential.
+ *
+ * Important notes:
+ * Only [dequeue] operation is suspended, since only then we process jobs, and because jobs are represented as
+ * [Deferred] values.
  */
 class Queue(
     initialValue: QueueJob? = null,
     /**
-     * Sets the maximum available workers to process a job concurrently.
+     * Sets the maximum available workers to process jobs concurrently.
      */
     private val numberOfWorkers: Int = 3
 ) {
-    private val activeWorkers = atomic(0)
     private val head = atomic<Node?>(null)
 
-    // Returns the physical tail in linkedList. Always check if queue is empty before invoking this, as
+    // Represent workers as semaphores to allow suspension when there is no worker available, instead of looping
+    // continuously for free worker.
+    private val workers = Semaphore(numberOfWorkers)
+
+    // Returns the physical tail in linked list. Always check if queue is empty before invoking this, as
     // it throws IllegalStateException.
     private val tail: Node
         get() {
@@ -36,9 +51,9 @@ class Queue(
     private val isEmpty: Boolean get() = head.value == null
 
     init {
+        require(numberOfWorkers > 0) { "number of workers cannot be 0 or negative, but got:$numberOfWorkers" }
         if (initialValue != null) {
-            val node: Node = Node(initialValue)
-            head.compareAndSet(null, node)
+            head.compareAndSet(null, Node(initialValue))
             _size.incrementAndGet()
         }
     }
@@ -50,37 +65,34 @@ class Queue(
             val newNode = Node(value)
             if (head.value == null) {
                 val result = head.compareAndSet(null, newNode) // if queue is empty update head
-                if (!result) updateTail(newNode) // fallback: head is occupied, proceed to add node in tail
+                if (!result) tail.setNext(newNode) // fallback: head is occupied, proceed to add node in tail
             } else {
-                updateTail(newNode) // else update tail
+                tail.setNext(newNode) // else update tail
             }
         } finally {
             _size.incrementAndGet()
         }
     }
 
-    private fun updateTail(newNode: Node) {
-        while (true) if (tail.next.compareAndSet(null, newNode)) return
+    // Returns value or Failure if queue is empty.
+    // Suspends when there is not an available worker.
+    suspend fun dequeue(): QueueResult {
+        if (isEmpty) return Failure
+        return if (workers.tryAcquire()) {
+            workers.useAcquiredPermit { dequeueImpl() }
+        } else {
+            // for debug output, but it is not guaranteed that it will represent the actual state of availablePermits.
+            println("waiting for an available worker, available workers:${workers.availablePermits}")
+            workers.withPermit { dequeueImpl() }
+        }
     }
 
-    private val invocations = atomic(0)
-
-    // Returns value or Failure if queue is empty
-    suspend fun dequeue(): QueueResult {
-//        val incrementAndGet = invocations.incrementAndGet()
-//        println("invocations: $incrementAndGet")
-        if (isEmpty) return Failure
-        while (!hasFreeWorker()) {
-            println("waiting for an available worker, active workers:${activeWorkers.value}")
-            delay(100)
-        }
-        activeWorkers.incrementAndGet()
+    private suspend fun dequeueImpl(): QueueResult {
         try {
             val job = removeOrReplaceHeadAndReturnCurrentJob()
             return Success(job.invoke(WorkerScope).await())
         } finally {
             _size.decrementAndGet()
-            activeWorkers.decrementAndGet() // release worker
         }
     }
 
@@ -98,23 +110,27 @@ class Queue(
         }
     }
 
-    private fun hasFreeWorker(): Boolean = activeWorkers.value != numberOfWorkers
-
     private class Node(
         val job: QueueJob,
-        // Pointer to the next node in linked list.
-        val next: AtomicRef<Node?> = atomic(null)
+        @Suppress("LocalVariableName") _next: Node? = null
     ) {
+        // Pointer to the next node in linked list.
+        val next: AtomicRef<Node?> = atomic(_next)
+
         // Checks if this node is the physical tail of the linked list.
         val isTail: Boolean get() = next.value == null
-    }
 
-    private val Node.isNotTail: Boolean get() = !isTail
+        fun setNext(newNode: Node) {
+            while (true) if (next.compareAndSet(null, newNode)) return
+        }
+    }
 }
 
 fun queueWithInitialValue(value: suspend CoroutineScope.() -> Deferred<Any?>): Queue {
     return Queue(value)
 }
+
+fun emptyQueue(): Queue = Queue()
 
 sealed class QueueResult
 data class Success(val value: Any?) : QueueResult()
@@ -123,3 +139,16 @@ object Failure : QueueResult()
 typealias QueueJob = suspend CoroutineScope.() -> Deferred<Any?>
 
 val WorkerScope = CoroutineScope(Dispatchers.IO)
+
+// assumes permit is already granted.
+@OptIn(ExperimentalContracts::class)
+private inline fun <T> Semaphore.useAcquiredPermit(action: () -> T): T {
+    contract {
+        callsInPlace(action, InvocationKind.EXACTLY_ONCE)
+    }
+    try {
+        return action()
+    } finally {
+        release()
+    }
+}
