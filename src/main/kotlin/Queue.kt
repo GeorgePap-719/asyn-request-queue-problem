@@ -1,110 +1,125 @@
 package asynqueueproblem
 
-import kotlinx.coroutines.*
-
-// Queue is => FIFO
+import kotlinx.atomicfu.AtomicRef
+import kotlinx.atomicfu.atomic
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 
 /**
  * Queue implementation based on linkedList.
  */
-class Queue(initialValue: QueueJob? = null) {
-    private var activeWorkers = 0
+class Queue(
+    initialValue: QueueJob? = null,
+    /**
+     * Sets the maximum available workers to process a job concurrently.
+     */
+    private val numberOfWorkers: Int = 3
+) {
+    private val activeWorkers = atomic(0)
+    private val head = atomic<Node?>(null)
 
-    // Returns head or null if queue is empty
-    private val head: QueueNode
+    // Returns the physical tail in linkedList. Always check if queue is empty before invoking this, as
+    // it throws IllegalStateException.
+    private val tail: Node
         get() {
-            checkNotNull(tail) { "queue is empty" }
-            var nextNode: QueueNode = tail!!
-            while (nextNode.next != null) {
-                nextNode = nextNode.next!!
+            check(!isEmpty) { "queue is empty" }
+            var nextNode: Node = head.value!!
+            while (!nextNode.isTail) {
+                nextNode = nextNode.next.value!!
             }
             return nextNode
         }
-    private var tail: QueueNode? = null
 
-    //
-    private var _size = 0
-    private val isEmpty: Boolean get() = _size == 0
+    private val _size = atomic(0)
+    private val isEmpty: Boolean get() = head.value == null
 
     init {
         if (initialValue != null) {
-            tail = QueueNode(initialValue)
-            _size++
+            val node: Node = Node(initialValue)
+            head.compareAndSet(null, node)
+            _size.incrementAndGet()
         }
     }
 
-    val size get() = _size
+    val size: Int get() = _size.value
 
     fun enqueue(value: QueueJob) {
         try {
-            val newNode = QueueNode(value)
-            if (tail == null) {
-                tail = newNode
-                return
+            val newNode = Node(value)
+            if (head.value == null) {
+                val result = head.compareAndSet(null, newNode) // if queue is empty update head
+                if (!result) updateTail(newNode) // fallback: head is occupied, proceed to add node in tail
+            } else {
+                updateTail(newNode) // else update tail
             }
-            // add new node in tail position
-            setNextNode(newNode)
         } finally {
-            _size++
+            _size.incrementAndGet()
         }
     }
 
-    private fun setNextNode(newNode: QueueNode) {
-        val oldTail = tail
-        tail = newNode
-        tail!!.next = oldTail
+    private fun updateTail(newNode: Node) {
+        while (true) if (tail.next.compareAndSet(null, newNode)) return
     }
 
-    /**
-     * Blocking dequeue.
-     */
-    suspend fun dequeue(): Any? {
-        println("trying to dequeue")
-        if (isEmpty) {
-            println("isEmpty with size:$size")
-            return Unit // if queue is empty break
-        }
+    private val invocations = atomic(0)
+
+    // Returns value or Failure if queue is empty
+    suspend fun dequeue(): QueueResult {
+//        val incrementAndGet = invocations.incrementAndGet()
+//        println("invocations: $incrementAndGet")
+        if (isEmpty) return Failure
         while (!hasFreeWorker()) {
-            println("waiting for an available worker")
+            println("waiting for an available worker, active workers:${activeWorkers.value}")
             delay(100)
         }
-        activeWorkers++
+        activeWorkers.incrementAndGet()
         try {
-            println("poping head")
-            val job = head.value
-            findHeadAndRemove()
-            return job.invoke(WorkerScope).await()
+            val job = removeOrReplaceHeadAndReturnCurrentJob()
+            return Success(job.invoke(WorkerScope).await())
         } finally {
-            activeWorkers-- // release worker
-            _size--
+            _size.decrementAndGet()
+            activeWorkers.decrementAndGet() // release worker
         }
     }
 
-    private fun findHeadAndRemove() {
-        checkNotNull(tail)
-        var nextNode: QueueNode = tail!!
-        var prevNode: QueueNode = tail!!
-        while (nextNode.next != null) {
-            prevNode = nextNode
-            nextNode = nextNode.next!!
+    private fun removeOrReplaceHeadAndReturnCurrentJob(): QueueJob {
+        return if (head.value!!.isTail) { // remove head
+            val cur = head.value
+            val update = head.compareAndSet(cur, null)
+            if (!update) return removeOrReplaceHeadAndReturnCurrentJob() // check again whether head `isTail` or not.
+            return cur!!.job
+        } else { // replace head with next in line node.
+            val cur = head.value!!
+            // In this case, we cannot loop on value, since the head might become a tail on any modification.
+            if (!head.compareAndSet(cur, cur.next.value)) return removeOrReplaceHeadAndReturnCurrentJob()
+            cur.job
         }
-        prevNode.next = null // remove head
     }
 
-    private fun hasFreeWorker(): Boolean = activeWorkers != MAX_WORKERS
+    private fun hasFreeWorker(): Boolean = activeWorkers.value != numberOfWorkers
 
-    private class QueueNode(var value: QueueJob, var next: QueueNode? = null)
-
-    companion object {
-        internal const val MAX_WORKERS = 3
+    private class Node(
+        val job: QueueJob,
+        // Pointer to the next node in linked list.
+        val next: AtomicRef<Node?> = atomic(null)
+    ) {
+        // Checks if this node is the physical tail of the linked list.
+        val isTail: Boolean get() = next.value == null
     }
+
+    private val Node.isNotTail: Boolean get() = !isTail
 }
 
 fun queueWithInitialValue(value: suspend CoroutineScope.() -> Deferred<Any?>): Queue {
     return Queue(value)
 }
 
+sealed class QueueResult
+data class Success(val value: Any?) : QueueResult()
+object Failure : QueueResult()
+
 typealias QueueJob = suspend CoroutineScope.() -> Deferred<Any?>
 
-@Suppress("PrivatePropertyName")
-private val WorkerScope = CoroutineScope(Dispatchers.IO)
+val WorkerScope = CoroutineScope(Dispatchers.IO)

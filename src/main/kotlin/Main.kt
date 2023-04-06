@@ -12,7 +12,6 @@ fun main(): Unit = runBlocking {
     val queue = queueWithInitialValue {
         async { println("1") }
     }
-
     queue.enqueue {
         async { println("2") }
     }
