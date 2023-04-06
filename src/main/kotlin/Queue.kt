@@ -19,8 +19,10 @@ import kotlin.contracts.contract
  * becomes free. By extension, the number of workers represent the queue's parallelism potential.
  *
  * Important notes:
- * Only [dequeue] operation is suspended, since only then we process jobs, and because jobs are represented as
+ * * Only [dequeue] operation is suspended, since only then we process jobs, and because jobs are represented as
  * [Deferred] values.
+ * * While queue is a FIFO data structure, it is possible that one job might finish earlier from another which has
+ * started beforehand. Only the sequence of job execution can be guaranteed.
  */
 class Queue(
     initialValue: QueueJob? = null,
