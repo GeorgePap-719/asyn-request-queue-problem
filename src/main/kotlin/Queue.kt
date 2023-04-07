@@ -134,12 +134,6 @@ fun queueWithInitialValue(value: suspend CoroutineScope.() -> Deferred<Any?>): Q
 
 fun emptyQueue(): Queue = Queue()
 
-sealed class QueueResult
-data class Success(val value: Any?) : QueueResult()
-object Failure : QueueResult()
-
-typealias QueueJob = suspend CoroutineScope.() -> Deferred<Any?>
-
 val WorkerScope = CoroutineScope(Dispatchers.IO)
 
 // assumes permit is already granted.
