@@ -44,7 +44,7 @@ class ArrayQueue(
             while (freeIndex.value != null) {
                 freeIndex = array[++index]
             }
-            if (!freeIndex.compareAndSet(null, value)) return tryEnqueue { value() } // at this point, there is
+            if (!freeIndex.compareAndSet(null, value)) return tryEnqueue(value) // at this point, there is
             // a chance that the array is already filled up. That's why we cannot simply look for the next free spot
             // without checking again if there is enough space.
             return true // enqueued job
