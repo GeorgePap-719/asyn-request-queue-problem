@@ -50,7 +50,6 @@ class Queue(
         }
 
     private val _size = atomic(0)
-    private val isEmpty: Boolean get() = head.value == null
 
     init {
         require(numberOfWorkers > 0) { "number of workers cannot be 0 or negative, but got:$numberOfWorkers" }
@@ -60,6 +59,7 @@ class Queue(
         }
     }
 
+    val isEmpty: Boolean get() = head.value == null
     val size: Int get() = _size.value
 
     fun enqueue(value: QueueJob) {
