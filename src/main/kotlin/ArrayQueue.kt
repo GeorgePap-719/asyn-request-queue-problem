@@ -8,6 +8,9 @@ import kotlinx.coroutines.sync.withPermit
 
 class ArrayQueue(
     initialValue: QueueJob? = null,
+    /**
+     * Sets array's maximum capacity.
+     */
     sizeOfArray: Int = 10,
     /**
      * Sets the maximum available workers to process jobs concurrently.
@@ -55,10 +58,21 @@ class ArrayQueue(
     // Returns value or Failure if queue is empty.
     // Suspends when there is not an available worker.
     suspend fun dequeue(): QueueResult {
+        /*
+         * Implementation notes
+         *
+         * We always dequeue only head position in array, and then we restructure the array to
+         * occupy the head position with the next in line item. This is done, in order to enforce the FIFO order in
+         * this structure. While restructuring an array can be a time-consuming operation (for big arrays), we only
+         * need the head position filled up to dequeue an object. This means that a worker is able to retrieve a head
+         * while another worker has not finished restructuring the array.
+         */
         workers.withPermit {
             if (isEmpty) return Failure
             val job = array.first().getAndUpdate {
-                if (it == null) dequeue() // in case head is already removed, try to dequeue again
+                if (it == null) return dequeue() // head is already removed, therefore we can assume that array is under
+                // restructuring. Nonetheless, we trigger again dequeue() to give up the current worker, and check again
+                // if array is empty.
                 null // remove head
             }
             restructureArray() // restructure array before processing
@@ -70,7 +84,7 @@ class ArrayQueue(
         for ((index, item) in array.withIndex()) {
             if (index == 0 && item.value != null) return // array is already restructured.
             if (index == array.size - 1) return // last item is left as null.
-            if (item.value != null) {
+            if (item.value != null) { //TODO: check if this is scenario is possible for big numbers
                 // in this case another worker as already restructured this position.
                 continue // But, it does not affect us directly, we can simply skip this cell.
             }
