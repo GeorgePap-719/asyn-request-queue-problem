@@ -35,6 +35,7 @@ class ArrayQueue(
     val isEmpty: Boolean get() = size == 0
 
     // Returns false if array is full else true.
+    // Suspends when there is not an available worker.
     suspend fun tryEnqueue(value: QueueJob): Boolean {
         workers.withPermit {
             if (!hasCapacity) return false
@@ -51,6 +52,8 @@ class ArrayQueue(
         }
     }
 
+    // Returns value or Failure if queue is empty.
+    // Suspends when there is not an available worker.
     suspend fun dequeue(): QueueResult {
         workers.withPermit {
             if (isEmpty) return Failure
