@@ -1,10 +1,11 @@
 package asynqueueproblem
 
-import kotlinx.atomicfu.AtomicRef
+import kotlinx.atomicfu.AtomicInt
 import kotlinx.atomicfu.atomic
-import kotlinx.atomicfu.getAndUpdate
+import kotlinx.atomicfu.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicReference
 
 class ArrayQueue(
     initialValue: QueueJob? = null,
@@ -17,19 +18,33 @@ class ArrayQueue(
      */
     private val numberOfWorkers: Int = 3,
 ) {
-    private val array: Array<AtomicRef<QueueJob?>> = Array(sizeOfArray) { atomic(null) }
+    // Use AtomicReference instead of AtomicRef, as workaround for https://github.com/Kotlin/kotlinx-atomicfu/issues/293
+    private val array: Array<AtomicReference<QueueJob?>> = Array(sizeOfArray) { AtomicReference(null) }
     private val _size = atomic(0)
+
+    // index for head and tail position.
+    private val head = atomic(0)
+    private val tail = atomic(0)
+
+    //TODO: add KDoc
+    private fun AtomicInt.moveIndexForward() {
+        update { (it + 1).mod(array.size) }
+    }
+
+    //
+    private val queueAvailableForDequeue = Semaphore(1)
 
     // Represent workers as semaphores to allow suspension when there is no worker available, instead of looping
     // continuously for free worker.
     private val workers = Semaphore(numberOfWorkers)
 
     private val hasCapacity: Boolean get() = _size.value < array.size
+    private val isFull: Boolean get() = _size.value == array.size
 
     init {
         require(numberOfWorkers > 0) { "number of workers cannot be 0 or negative, but got:$numberOfWorkers" }
         if (initialValue != null) {
-            array[0] = atomic(initialValue)
+            array[0] = AtomicReference(initialValue)
             _size.incrementAndGet()
         }
     }
@@ -41,17 +56,19 @@ class ArrayQueue(
     // Suspends when there is not an available worker.
     suspend fun tryEnqueue(value: QueueJob): Boolean {
         workers.withPermit {
-            if (!hasCapacity) return false
-            // find next free index
-            var index = 0
-            var freeIndex = array[index]
-            while (freeIndex.value != null) {
-                freeIndex = array[++index]
+            try {
+                while (true) {
+                    if (isFull) return false
+                    if (array[tail.value].compareAndSet(null, value)) return true
+                }
+            } finally {
+                tail.moveIndexForward()
+                _size.incrementAndGet()
+                if (queueAvailableForDequeue.availablePermits == 0) {
+                    // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
+                    queueAvailableForDequeue.release() // signal waiters that queue is ready for dequeue.
+                }
             }
-            if (!freeIndex.compareAndSet(null, value)) return tryEnqueue(value) // at this point, there is
-            // a chance that the array is already filled up. That's why we cannot simply look for the next free spot
-            // without checking again if there is enough space.
-            return true // enqueued job
         }
     }
 
@@ -67,31 +84,35 @@ class ArrayQueue(
          * need the head position filled up to dequeue an object. This means that a worker is able to retrieve a head
          * while another worker has not finished restructuring the array.
          */
-        workers.withPermit {
-            if (isEmpty) return Failure
-            val job = array.first().getAndUpdate {
-                if (it == null) return dequeue() // head is already removed, therefore we can assume that array is under
-                // restructuring. Nonetheless, we trigger again dequeue() to give up the current worker, and check again
-                // if array is empty.
-                null // remove head
+//        workers.withPermit {
+//            if (isEmpty) return Failure
+//            val job = array.first().getAndUpdate {
+//                if (it == null) return@getAndUpdate null // head is already removed, therefore we can assume that array is under
+//                // restructuring. Nonetheless, we trigger again dequeue() to give up the current worker, and check again
+//                // if array is empty.
+//                null // remove head
+//            } ?: return dequeue()
+//            restructureArray() // restructure array before processing
+//            _size.decrementAndGet()
+//            return Success(job.invoke(WorkerScope).await())
+//        }
+
+        val isQueueEmpty = workers.withPermit {
+            if (isEmpty) return@withPermit true
+            while (true) {
+                val job = array[head.value].get() ?: continue
+                head.moveIndexForward()
+                _size.decrementAndGet()
+                return Success(job.invoke(WorkerScope).await())
             }
-            restructureArray() // restructure array before processing
-            return Success(job!!.invoke(WorkerScope).await())
+        }
+        if (isQueueEmpty as Boolean) {
+            TODO("not yet impl")
         }
     }
 
-    private fun restructureArray() {
-        for ((index, item) in array.withIndex()) {
-            if (index == 0 && item.value != null) return // array is already restructured.
-            if (index == array.size - 1) return // last item is left as null.
-            if (item.value != null) { //TODO: check if this is scenario is possible for big numbers
-                // in this case another worker as already restructured this position.
-                continue // But, it does not affect us directly, we can simply skip this cell.
-            }
-            item.compareAndSet(null, array[index + 1].value) // if false we skip the operation either way, since
-            // is the last operation in loop.
-        }
-    }
+    @Suppress("ClassName")
+    private object EMPTY_QUEUE
 }
 
 fun emptyArrayQueue(): ArrayQueue = ArrayQueue()
