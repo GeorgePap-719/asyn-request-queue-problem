@@ -97,8 +97,8 @@ class ArrayQueue(
 //            return Success(job.invoke(WorkerScope).await())
 //        }
 
-        val isQueueEmpty = workers.withPermit {
-            if (isEmpty) return@withPermit true
+        workers.withPermit {
+            if (isEmpty) return@withPermit
             while (true) {
                 val job = array[head.value].get() ?: continue
                 head.moveIndexForward()
@@ -106,9 +106,10 @@ class ArrayQueue(
                 return Success(job.invoke(WorkerScope).await())
             }
         }
-        if (isQueueEmpty as Boolean) {
-            TODO("not yet impl")
-        }
+        // queue is empty at this point.
+        queueAvailableForDequeue.acquire() // as workaround to trigger suspension in next operation.
+        // Semaphore will be released in next enqueue.
+        queueAvailableForDequeue.withPermit { return dequeue() }
     }
 
     @Suppress("ClassName")
