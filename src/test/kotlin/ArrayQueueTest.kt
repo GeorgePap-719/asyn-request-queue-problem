@@ -4,11 +4,8 @@ import asynqueueproblem.emptyArrayQueue
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
-import kotlin.contracts.ExperimentalContracts
-import kotlin.contracts.InvocationKind
-import kotlin.contracts.contract
 
 class ArrayQueueTest {
 
@@ -28,37 +25,11 @@ class ArrayQueueTest {
         assert(queue.isEmpty)
     }
 
-    private val sem = Semaphore(2)
-
-    //@Test
-    fun testSem(): Unit = runBlocking {
-        println(test())
+    @Test
+    fun shouldSuspendWhenDequeuingEmptyQueue(): Unit = runTest {
+        val queue = emptyArrayQueue()
+        queue.dequeue()
+        error("should not reach here")
     }
 
-    private var testCounter = 0
-
-    private suspend fun test(): String {
-        if (++testCounter == 5) return "end"
-        println("first line in test")
-        sem.withPermitAndDebugger {
-            return test()
-        }
-    }
 }
-
-@OptIn(ExperimentalContracts::class)
-suspend inline fun <T> Semaphore.withPermitAndDebugger(action: () -> T): T {
-    contract {
-        callsInPlace(action, InvocationKind.EXACTLY_ONCE)
-    }
-
-    acquire()
-    println("acquiring perm")
-    try {
-        return action()
-    } finally {
-        release()
-        println("releasing perm")
-    }
-}
-

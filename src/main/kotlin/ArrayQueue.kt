@@ -6,6 +6,9 @@ import kotlinx.atomicfu.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 
 class ArrayQueue(
     initialValue: QueueJob? = null,
@@ -27,8 +30,19 @@ class ArrayQueue(
     private val tail = atomic(0)
 
     //TODO: add KDoc
-    private fun AtomicInt.moveIndexForward() {
+    @Suppress("NOTHING_TO_INLINE")
+    private inline fun AtomicInt.moveIndexForward() {
         update { (it + 1).mod(array.size) }
+    }
+
+    private fun moveHeadForwardAndDecrSize() {
+        head.moveIndexForward()
+        _size.decrementAndGet()
+    }
+
+    private fun moveTailForwardAndIncrSize() {
+        tail.moveIndexForward()
+        _size.incrementAndGet()
     }
 
     //
@@ -49,6 +63,7 @@ class ArrayQueue(
         }
     }
 
+
     val size: Int get() = _size.value
     val isEmpty: Boolean get() = size == 0
 
@@ -56,17 +71,15 @@ class ArrayQueue(
     // Suspends when there is not an available worker.
     suspend fun tryEnqueue(value: QueueJob): Boolean {
         workers.withPermit {
-            try {
-                while (true) {
-                    if (isFull) return false
-                    if (array[tail.value].compareAndSet(null, value)) return true
-                }
-            } finally {
-                tail.moveIndexForward()
-                _size.incrementAndGet()
-                if (queueAvailableForDequeue.availablePermits == 0) {
-                    // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
-                    queueAvailableForDequeue.release() // signal waiters that queue is ready for dequeue.
+            while (true) {
+                if (isFull) return false
+                if (array[tail.value].compareAndSet(null, value)) {
+                    moveTailForwardAndIncrSize()
+                    if (queueAvailableForDequeue.availablePermits == 0) {
+                        // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
+                        queueAvailableForDequeue.release() // signal waiters that queue is ready for dequeue.
+                    }
+                    return true // value is inserted.
                 }
             }
         }
@@ -75,45 +88,43 @@ class ArrayQueue(
     // Returns value or Failure if queue is empty.
     // Suspends when there is not an available worker.
     suspend fun dequeue(): QueueResult {
-        /*
-         * Implementation notes
-         *
-         * We always dequeue only head position in array, and then we restructure the array to
-         * occupy the head position with the next in line item. This is done, in order to enforce the FIFO order in
-         * this structure. While restructuring an array can be a time-consuming operation (for big arrays), we only
-         * need the head position filled up to dequeue an object. This means that a worker is able to retrieve a head
-         * while another worker has not finished restructuring the array.
-         */
-//        workers.withPermit {
-//            if (isEmpty) return Failure
-//            val job = array.first().getAndUpdate {
-//                if (it == null) return@getAndUpdate null // head is already removed, therefore we can assume that array is under
-//                // restructuring. Nonetheless, we trigger again dequeue() to give up the current worker, and check again
-//                // if array is empty.
-//                null // remove head
-//            } ?: return dequeue()
-//            restructureArray() // restructure array before processing
-//            _size.decrementAndGet()
-//            return Success(job.invoke(WorkerScope).await())
-//        }
-
         workers.withPermit {
-            if (isEmpty) return@withPermit
-            while (true) {
-                val job = array[head.value].get() ?: continue
-                head.moveIndexForward()
-                _size.decrementAndGet()
+            while (true) { // fast-path, queue is not empty and item is ready for retrieval.
+                if (isEmpty) return@withPermit // move to slow-path
+                val job = array[head.value].get() ?: continue // loop until there is an available head to remove.
+                moveHeadForwardAndDecrSize()
+                // if queue is empty cause of this `dequeue` operation, then acquire permit (signal queue is empty), if
+                // there is one.
+                if (isEmpty) queueAvailableForDequeue.tryAcquire()
                 return Success(job.invoke(WorkerScope).await())
             }
         }
         // queue is empty at this point.
-        queueAvailableForDequeue.acquire() // as workaround to trigger suspension in next operation.
-        // Semaphore will be released in next enqueue.
-        queueAvailableForDequeue.withPermit { return dequeue() }
+        while (true) { // slow-path, loop until there is an available item to retrieve.
+            queueAvailableForDequeue.acquire() // suspend until queue has an item ready for retrieval.
+            workers.withPermit {
+                if (isEmpty) return@withPermit // continue, suspend again until there is an available item.
+                val job = array[head.value].get()
+                    ?: return@withPermit // continue, suspend again until there is an available item.
+                moveHeadForwardAndDecrSize()
+                if (hasCapacity) queueAvailableForDequeue.release() // release sem only if this item was not the last one.
+                return Success(job.invoke(WorkerScope).await())
+            }
+        }
     }
 
-    @Suppress("ClassName")
-    private object EMPTY_QUEUE
+    @OptIn(ExperimentalContracts::class)
+    private suspend inline fun <T> Semaphore.suspendUntilItemInsertion(action: () -> T): T {
+        contract {
+            callsInPlace(action, InvocationKind.EXACTLY_ONCE)
+        }
+        acquire() // suspend until an item is inserted
+        try {
+            return action()
+        } finally {
+            if (!isEmpty) release() // release sem, only if queue is not empty.
+        }
+    }
 }
 
 fun emptyArrayQueue(): ArrayQueue = ArrayQueue()
