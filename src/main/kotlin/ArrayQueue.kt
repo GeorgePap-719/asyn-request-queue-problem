@@ -62,7 +62,7 @@ class ArrayQueue(
     }
 
     /*
-     * This semaphore represents whether there is any item in queue for retrieval. Its main purpose is to help suspend
+     * This variable represents whether there is any item in queue for retrieval. Its main purpose is to help suspend
      * consumers who try to dequeue from queue when is empty. Consumers are suspended until next insertion.
      *
      * 0 -> Empty queue
@@ -73,11 +73,7 @@ class ArrayQueue(
      *  queue is empty     |    insertion of at least one item   |  insertion of items    |    queue is empty
      *  | ---- 0 ---- |   -->   | ---- 1 ---- |                 -->  | ---- 1 ---- |     -->   | ---- 0 ---- |
      */
-    private val queueAvailableForDequeue = Semaphore(
-        1,
-        // Queue's initial state is empty,
-        1
-    )
+    private val queueAvailableForDequeue = QueueState()
 
     // Represent workers as semaphores to allow suspension when there is not a worker available, instead of looping
     // continuously for a free worker.
@@ -91,7 +87,7 @@ class ArrayQueue(
         require(capacity > 0) { "capacity of array cannot be 0 or negative, but got:$capacity" }
         if (initialValue != null) {
             tryAddLast(initialValue)
-            queueAvailableForDequeue.release() // release sem, since queue is not empty.
+            queueAvailableForDequeue.signalQueueIsNotEmpty() // release sem, since queue is not empty.
         }
     }
 
@@ -105,11 +101,8 @@ class ArrayQueue(
             while (true) {
                 if (isFull) return false
                 if (tryAddLast(value)) {
-                    if (queueAvailableForDequeue.availablePermits == 0) { // this is not concurrent-safe operation.
-                        // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
-                        println("permits:${queueAvailableForDequeue.availablePermits}")
-                        queueAvailableForDequeue.release() // signal waiters that queue is ready for dequeue.
-                    }
+                    // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
+                    queueAvailableForDequeue.signalQueueIsNotEmpty()
                     return true // value is inserted.
                 }
             }
@@ -125,7 +118,7 @@ class ArrayQueue(
                 val job = removeFirstOrNull() ?: continue // loop until there is an available head to remove.
                 // if queue is empty cause of this `dequeue` operation, then acquire permit (signal queue is empty), if
                 // there is one.
-                if (isEmpty) queueAvailableForDequeue.tryAcquire()
+                if (isEmpty) queueAvailableForDequeue.signalQueueIsEmpty()
                 return job.invoke(WorkerScope).await()
             }
         }
@@ -135,12 +128,13 @@ class ArrayQueue(
 
     private suspend fun dequeueSlowPath(): Any? {
         while (true) { // loop until there is an available item to retrieve.
-            queueAvailableForDequeue.acquire() // suspend until queue has an item ready for retrieval.
+            queueAvailableForDequeue.queueHasItemOrSuspend() // suspend until queue has an item ready for retrieval.
             workers.withPermit {
                 if (isEmpty) return@withPermit // continue, suspend again until there is an available item.
                 val job = removeFirstOrNull()
                     ?: return@withPermit // continue, suspend again until there is an available item.
-                if (hasCapacity) queueAvailableForDequeue.release() // release sem only if this item was not the last one.
+                // set state to `0` only if this item was not the last one.
+                if (hasCapacity) queueAvailableForDequeue.signalQueueIsNotEmpty()
                 return job.invoke(WorkerScope).await()
             }
         }
@@ -173,13 +167,12 @@ private class QueueState {
     }
 
     fun signalQueueIsNotEmpty() {
-        if (trackedPermits.value == 0) {
-            // try update first `trackedPermits` to avoid race conditions (two threads read variable at the same time),
-            // then update state.
-            // if update fails, other thread was faster. In that case we just return, since goal was already achieved
-            // (set state to 0).
-            if (!trackedPermits.compareAndSet(0, 1)) return
-            state.release() // safe to set state to `0`.
-        }
+        if (trackedPermits.value != 0) return // no need to update state.
+        // try update first `trackedPermits` to avoid race conditions (two threads read variable at the same time),
+        // then update state.
+        // if update fails, other thread was faster. In that case we just return, since goal was already achieved
+        // (set state to 0).
+        if (!trackedPermits.compareAndSet(0, 1)) return
+        state.release() // safe to set state to `0`.
     }
 }
