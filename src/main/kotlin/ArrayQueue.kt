@@ -105,8 +105,9 @@ class ArrayQueue(
             while (true) {
                 if (isFull) return false
                 if (tryAddLast(value)) {
-                    if (queueAvailableForDequeue.availablePermits == 0) {
+                    if (queueAvailableForDequeue.availablePermits == 0) { // this is not concurrent-safe operation.
                         // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
+                        println("permits:${queueAvailableForDequeue.availablePermits}")
                         queueAvailableForDequeue.release() // signal waiters that queue is ready for dequeue.
                     }
                     return true // value is inserted.
