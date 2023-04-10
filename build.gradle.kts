@@ -32,6 +32,10 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    jvmArgs(// required lincheck
+        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.util=ALL-UNNAMED"
+    )
 }
 
 kotlin {
