@@ -28,7 +28,8 @@ class ArrayQueue(
 
     /**
      * Moves forward the index (head or tail), by updating it based on "(current_position + 1).mod(capacity)" formula.
-     * This allows us to treat the array as a closed circle, thus making it unnecessary to ever move items stores in array.
+     * This allows us to treat the array as a closed circle, and letting head and tail drift endlessly in that circle
+     * makes it unnecessary to ever move items stores in the array.
      */
     @Suppress("NOTHING_TO_INLINE")
     private inline fun AtomicInt.moveIndexForward() {
@@ -116,7 +117,7 @@ class ArrayQueue(
 
     // Returns value or suspends if queue is empty.
     // Also, suspends when there is not an available worker.
-    suspend fun dequeue(): QueueResult {
+    suspend fun dequeue(): Any? {
         workers.withPermit {
             while (true) { // fast-path, queue is not empty and item is ready for retrieval.
                 if (isEmpty) return@withPermit // go-to slow-path
@@ -124,7 +125,7 @@ class ArrayQueue(
                 // if queue is empty cause of this `dequeue` operation, then acquire permit (signal queue is empty), if
                 // there is one.
                 if (isEmpty) queueAvailableForDequeue.tryAcquire()
-                return Success(job.invoke(WorkerScope).await())
+                return job.invoke(WorkerScope).await()
             }
         }
         // queue is empty at this point.
@@ -135,7 +136,7 @@ class ArrayQueue(
                 val job = removeFirstOrNull()
                     ?: return@withPermit // continue, suspend again until there is an available item.
                 if (hasCapacity) queueAvailableForDequeue.release() // release sem only if this item was not the last one.
-                return Success(job.invoke(WorkerScope).await())
+                return job.invoke(WorkerScope).await()
             }
         }
     }
