@@ -93,7 +93,7 @@ class ArrayQueue(
     val size: Int get() = _size.value
     val isEmpty: Boolean get() = size == 0
 
-    // Returns false if array is full else true.
+    // Returns false if queue is full else true.
     // Suspends when there is not an available worker.
     suspend fun tryEnqueue(value: QueueJob): Boolean {
         workers.withPermit {
@@ -126,7 +126,7 @@ class ArrayQueue(
 
     private suspend fun dequeueSlowPath(): Any? {
         while (true) { // loop until there is an available item to retrieve.
-            queueCapacityState.queueHasItemOrSuspend() // suspend until queue has an item ready for retrieval.
+            queueCapacityState.ifQueueIsNotEmptyContinueOrSuspend() // suspend until queue has an item ready for retrieval.
             workers.withPermit {
                 if (isEmpty) return@withPermit // continue, suspend again until there is an available item.
                 val job = removeFirstOrNull()
@@ -166,7 +166,7 @@ private class QueueCapacityState {
     // A separate tracker for permits, to allow atomic operations on it, aka see signalQueueIsNotEmpty().
     private val trackedPermits = atomic(0)
 
-    suspend fun queueHasItemOrSuspend() {
+    suspend fun ifQueueIsNotEmptyContinueOrSuspend() {
         state.acquire()
         trackedPermits.decrementAndGet()
     }
