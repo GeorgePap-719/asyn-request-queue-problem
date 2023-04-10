@@ -103,6 +103,42 @@ class ArrayQueueTest {
 
     }
 
+    @OptIn(ExperimentalTime::class)
+    @Test
+    fun stressTestWithMultipleProducersAndConsumersWithWarmup(): Unit = runBlocking(WorkerScope.coroutineContext) {
+        repeat(10) {
+            withTimeout(Duration.parse("60s")) {
+                val elapsed = TimeSource.Monotonic.measureTime {
+                    val capacity = 100_000
+                    val args =
+                        arrayOfNulls<Int>(capacity) // gen array to verify state. Choose array instead of list with prefix size to avoid
+                    // resize, since resizing needs synchronization.
+                    val queue = ArrayQueue(capacity = capacity)
+                    for (i in 1..capacity) {
+                        launch {
+                            args[i - 1] = i // fill array
+                            assert(queue.tryEnqueue {
+                                async { i }
+                            })
+                        }
+                    }
+
+                    val jobs = buildList {
+                        for (item in 0 until capacity) { // size is unpredictable at this moment
+                            add(launch {
+                                assertContainsAndRemove(args, queue.dequeue() as Int)
+                            })
+                        }
+                    }
+                    jobs.forEach { it.join() }
+                    assert(queue.isEmpty)
+                    assert(args.isEmpty)
+                }
+                println("elapsed:$elapsed")
+            }
+        }
+    }
+
     private fun assertContainsAndRemove(source: Array<Int?>, value: Int) {
         assertContains(source, value)
         source[value - 1] = null
