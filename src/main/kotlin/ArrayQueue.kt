@@ -130,7 +130,11 @@ class ArrayQueue(
             }
         }
         // queue is empty at this point.
-        while (true) { // slow-path, loop until there is an available item to retrieve.
+        return dequeueSlowPath()
+    }
+
+    private suspend fun dequeueSlowPath(): Any? {
+        while (true) { // loop until there is an available item to retrieve.
             queueAvailableForDequeue.acquire() // suspend until queue has an item ready for retrieval.
             workers.withPermit {
                 if (isEmpty) return@withPermit // continue, suspend again until there is an available item.
