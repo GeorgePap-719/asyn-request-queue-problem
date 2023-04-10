@@ -61,19 +61,7 @@ class ArrayQueue(
         }
     }
 
-    /*
-     * This variable represents whether there is any item in queue for retrieval. Its main purpose is to help suspend
-     * consumers who try to dequeue from queue when is empty. Consumers are suspended until next insertion.
-     *
-     * 0 -> Empty queue
-     * 1 -> Not empty queue
-     *
-     *                         States
-     *
-     *  queue is empty     |    insertion of at least one item   |  insertion of items    |    queue is empty
-     *  | ---- 0 ---- |   -->   | ---- 1 ---- |                 -->  | ---- 1 ---- |     -->   | ---- 0 ---- |
-     */
-    private val queueAvailableForDequeue = QueueState()
+    private val queueCapacityState = QueueCapacityState()
 
     // Represent workers as semaphores to allow suspension when there is not a worker available, instead of looping
     // continuously for a free worker.
@@ -87,7 +75,7 @@ class ArrayQueue(
         require(capacity > 0) { "capacity of array cannot be 0 or negative, but got:$capacity" }
         if (initialValue != null) {
             tryAddLast(initialValue)
-            queueAvailableForDequeue.signalQueueIsNotEmpty() // release sem, since queue is not empty.
+            queueCapacityState.signalQueueIsNotEmpty()
         }
     }
 
@@ -102,7 +90,7 @@ class ArrayQueue(
                 if (isFull) return false
                 if (tryAddLast(value)) {
                     // This needed in order to allow consumers suspend when they try to dequeue from queue when is empty.
-                    queueAvailableForDequeue.signalQueueIsNotEmpty()
+                    queueCapacityState.signalQueueIsNotEmpty()
                     return true // value is inserted.
                 }
             }
@@ -116,9 +104,8 @@ class ArrayQueue(
             while (true) { // fast-path, queue is not empty and item is ready for retrieval.
                 if (isEmpty) return@withPermit // go-to slow-path
                 val job = removeFirstOrNull() ?: continue // loop until there is an available head to remove.
-                // if queue is empty cause of this `dequeue` operation, then acquire permit (signal queue is empty), if
-                // there is one.
-                if (isEmpty) queueAvailableForDequeue.signalQueueIsEmpty()
+                // if queue is empty cause of this `dequeue` operation, signal queue is empty.
+                if (isEmpty) queueCapacityState.signalQueueIsEmpty()
                 return job.invoke(WorkerScope).await()
             }
         }
@@ -128,13 +115,13 @@ class ArrayQueue(
 
     private suspend fun dequeueSlowPath(): Any? {
         while (true) { // loop until there is an available item to retrieve.
-            queueAvailableForDequeue.queueHasItemOrSuspend() // suspend until queue has an item ready for retrieval.
+            queueCapacityState.queueHasItemOrSuspend() // suspend until queue has an item ready for retrieval.
             workers.withPermit {
                 if (isEmpty) return@withPermit // continue, suspend again until there is an available item.
                 val job = removeFirstOrNull()
                     ?: return@withPermit // continue, suspend again until there is an available item.
                 // set state to `0` only if this item was not the last one.
-                if (hasCapacity) queueAvailableForDequeue.signalQueueIsNotEmpty()
+                if (hasCapacity) queueCapacityState.signalQueueIsNotEmpty()
                 return job.invoke(WorkerScope).await()
             }
         }
@@ -143,10 +130,22 @@ class ArrayQueue(
 
 fun emptyArrayQueue(): ArrayQueue = ArrayQueue()
 
-private class QueueState {
-    // States:
-    // 0 -> QueueEmpty
-    // 1 -> QueueNotEmpty
+/**
+ * Represents whether queue is empty or not. Technically, it is a wrapper above a semaphore with single permit.
+ */
+private class QueueCapacityState {
+    /*
+     * This semaphore represents whether there is any item in queue for retrieval. Its main purpose is to help suspend
+     * consumers who try to dequeue from queue when is empty. Consumers are suspended until next insertion.
+     *
+     * 0 -> Empty queue
+     * 1 -> Not empty queue
+     *
+     *                         States
+     *
+     *  queue is empty     |    insertion of at least one item   |  insertion of items    |    queue is empty
+     *  | ---- 0 ---- |   -->   | ---- 1 ---- |                 -->  | ---- 1 ---- |     -->   | ---- 0 ---- |
+     */
     private val state = Semaphore(
         1,
         // Queue's initial state is empty.
@@ -169,9 +168,8 @@ private class QueueState {
     fun signalQueueIsNotEmpty() {
         if (trackedPermits.value != 0) return // no need to update state.
         // try update first `trackedPermits` to avoid race conditions (two threads read variable at the same time),
-        // then update state.
-        // if update fails, other thread was faster. In that case we just return, since goal was already achieved
-        // (set state to 0).
+        // then update state. If update fails, other thread was faster. In that case we just return, since goal was
+        // already achieved (set state to 0).
         if (!trackedPermits.compareAndSet(0, 1)) return
         state.release() // safe to set state to `0`.
     }

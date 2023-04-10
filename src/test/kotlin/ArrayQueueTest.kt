@@ -43,13 +43,6 @@ class ArrayQueueTest {
         assert(queue.isEmpty)
     }
 
-    //@Test
-    fun shouldSuspendWhenDequeuingEmptyQueue(): Unit = runTest {
-        val queue = emptyArrayQueue()
-        queue.dequeue()
-        error("should not reach here")
-    }
-
     @Test
     fun stressTestWithBlockingProducer(): Unit = runTest {
         val capacity = 100_000
