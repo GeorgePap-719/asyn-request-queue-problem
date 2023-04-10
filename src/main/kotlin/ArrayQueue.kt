@@ -129,7 +129,7 @@ class ArrayQueue(
                 return job.invoke(WorkerScope).await()
             }
         }
-        // queue is empty at this point.
+        // queue is empty at this point, suspend caller and wait for next `enqueue`.
         return dequeueSlowPath()
     }
 
@@ -148,3 +148,38 @@ class ArrayQueue(
 }
 
 fun emptyArrayQueue(): ArrayQueue = ArrayQueue()
+
+private class QueueState {
+    // States:
+    // 0 -> QueueEmpty
+    // 1 -> QueueNotEmpty
+    private val state = Semaphore(
+        1,
+        // Queue's initial state is empty.
+        1
+    )
+
+    // A separate tracker for permits, to allow atomic operations on it, aka see signalQueueIsNotEmpty().
+    private val trackedPermits = atomic(0)
+
+    suspend fun queueHasItemOrSuspend() {
+        state.acquire()
+        trackedPermits.decrementAndGet()
+    }
+
+    fun signalQueueIsEmpty() {
+        // if tryAcquire() fails, it means state is already to `0`.
+        if (state.tryAcquire()) trackedPermits.decrementAndGet()
+    }
+
+    fun signalQueueIsNotEmpty() {
+        if (trackedPermits.value == 0) {
+            // try update first `trackedPermits` to avoid race conditions (two threads read variable at the same time),
+            // then update state.
+            // if update fails, other thread was faster. In that case we just return, since goal was already achieved
+            // (set state to 0).
+            if (!trackedPermits.compareAndSet(0, 1)) return
+            state.release() // safe to set state to `0`.
+        }
+    }
+}
