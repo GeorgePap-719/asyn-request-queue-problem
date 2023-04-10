@@ -7,6 +7,17 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * A concurrent queue implementation using a fixed-length array to store items.
+ *
+ * The core idea is that each item in the queue represents a [job][QueueJob], which needs to be processed.
+ * Each job can only be processed by a free "worker", if there is one available, otherwise it suspends until a worker
+ * becomes free. By extension, the number of workers represent the queue's parallelism potential.
+ *
+ * Important notes:
+ * * While queue is a FIFO data structure, it is possible that one job might finish earlier from another which has
+ * started beforehand. Only the sequence of job execution can be guaranteed.
+ */
 class ArrayQueue(
     initialValue: QueueJob? = null,
     /**
@@ -132,11 +143,11 @@ fun emptyArrayQueue(): ArrayQueue = ArrayQueue()
 
 /**
  * Represents whether queue is empty or not. Technically, it is a wrapper above a semaphore with single permit.
+ *  Its main purpose is to help suspend consumers who try to dequeue from queue when is empty, until next insertion.
  */
 private class QueueCapacityState {
     /*
-     * This semaphore represents whether there is any item in queue for retrieval. Its main purpose is to help suspend
-     * consumers who try to dequeue from queue when is empty. Consumers are suspended until next insertion.
+     * This semaphore represents whether there is any item in queue for retrieval.
      *
      * 0 -> Empty queue
      * 1 -> Not empty queue

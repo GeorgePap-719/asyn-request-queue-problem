@@ -6,7 +6,6 @@ import asynqueueproblem.emptyArrayQueue
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Test
 import kotlin.test.assertContains
@@ -44,7 +43,7 @@ class ArrayQueueTest {
     }
 
     @Test
-    fun stressTestWithBlockingProducer(): Unit = runTest {
+    fun stressTestWithBlockingProducer(): Unit = runBlocking(WorkerScope.coroutineContext) {
         val capacity = 100_000
         val args =
             arrayOfNulls<Int>(capacity) // gen array to verify state. Choose array instead of list with prefix size to avoid
