@@ -180,8 +180,8 @@ private class QueueCapacityState {
         if (trackedPermits.value == 1) return // no need to update state.
         // try update first `trackedPermits` to avoid race conditions (two threads read variable at the same time),
         // then update state. If update fails, other thread was faster. In that case we just return, since goal was
-        // already achieved (set state to 0).
+        // already achieved (set state to 1).
         if (!trackedPermits.compareAndSet(0, 1)) return
-        state.release() // safe to set state to `0`.
+        state.release() // safe to set state to `1`.
     }
 }
