@@ -40,7 +40,7 @@ class ArrayQueue(
     /**
      * Moves forward the index (head or tail), by updating it based on "(current_position + 1).mod(capacity)" formula.
      * This allows us to treat the array as a closed circle, and letting head and tail drift endlessly in that circle
-     * makes it unnecessary to ever move items stores in the array.
+     * makes it unnecessary to ever move items stored in the array.
      */
     @Suppress("NOTHING_TO_INLINE")
     private inline fun AtomicInt.moveIndexForward() {
