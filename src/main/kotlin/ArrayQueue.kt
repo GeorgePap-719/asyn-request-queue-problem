@@ -163,21 +163,21 @@ private class QueueCapacityState {
         1
     )
 
-    // A separate tracker for permits, to allow atomic operations on it, aka see signalQueueIsNotEmpty().
+    // A separate tracker for permits, to allow atomic operations on it (see signalQueueIsNotEmpty()).
     private val trackedPermits = atomic(0)
 
     suspend fun ifQueueIsNotEmptyContinueOrSuspend() {
         state.acquire()
-        trackedPermits.decrementAndGet()
+        trackedPermits.compareAndSet(1, 0) // trackedPermits--
     }
 
     fun signalQueueIsEmpty() {
         // if tryAcquire() fails, it means state is already to `0`.
-        if (state.tryAcquire()) trackedPermits.decrementAndGet()
+        if (state.tryAcquire()) trackedPermits.compareAndSet(1, 0)
     }
 
     fun signalQueueIsNotEmpty() {
-        if (trackedPermits.value != 0) return // no need to update state.
+        if (trackedPermits.value == 1) return // no need to update state.
         // try update first `trackedPermits` to avoid race conditions (two threads read variable at the same time),
         // then update state. If update fails, other thread was faster. In that case we just return, since goal was
         // already achieved (set state to 0).
