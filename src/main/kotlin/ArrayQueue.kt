@@ -143,7 +143,7 @@ fun emptyArrayQueue(): ArrayQueue = ArrayQueue()
 
 /**
  * Represents whether queue is empty or not. Technically, it is a wrapper above a semaphore with single permit.
- *  Its main purpose is to help suspend consumers who try to dequeue from queue when is empty, until next insertion.
+ * Its main purpose is to help suspend consumers who try to dequeue from queue when is empty, until next insertion.
  */
 private class QueueCapacityState {
     /*
